@@ -1,0 +1,24 @@
+# AWS SDK for Python
+boto3==1.35.36
+botocore==1.35.36
+
+# Data processing
+pandas==2.2.3
+
+# For data validation and parsing
+python-dateutil==2.9.0
+
+# Configuration and environment variables
+python-dotenv==1.0.1
+
+# Testing (optional)
+pytest==8.3.3
+
+# Type hints support
+typing-extensions==4.12.2
+
+# Streamlit and visualization
+streamlit==1.31.0
+plotly==5.18.0
+matplotlib==3.8.2
+seaborn==0.13.0

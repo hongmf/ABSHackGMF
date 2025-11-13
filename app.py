@@ -20,12 +20,20 @@ import os
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 from dynamodb_operations import DynamoDBHandler
+from langgraph_orchestrator import LangGraphOrchestrator
 
 # Load environment variables
 load_dotenv()
 
+# S3 Configuration
+S3_BUCKET_ABS_EE = os.getenv('S3_BUCKET_NAME1', 'abs-ee')
+S3_BUCKET_424H = os.getenv('S3_BUCKET_NAME2', '424h-prospectus')
+S3_BUCKET_10D = os.getenv('S3_BUCKET_NAME3', '10-d')
+
 # Bedrock Configuration
 KNOWLEDGE_BASE_ID = os.getenv('BEDROCK_KB_ID', 'A7EOGV6BHS')
+KNOWLEDGE_BASE_ID_424H = os.getenv('BEDROCK_KB_ID_424H', '83TDL5E9HV')
+KNOWLEDGE_BASE_ID_10D = os.getenv('BEDROCK_KB_ID_10D', 'O2KBJHZUJO')
 BEDROCK_REGION = os.getenv('BEDROCK_REGION', 'us-west-2')
 MODEL_ARN = os.getenv('BEDROCK_MODEL_ARN', 'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0')
 
@@ -79,6 +87,44 @@ def load_data():
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return []
+
+
+@st.cache_data(ttl=300)
+def load_multi_source_data():
+    """Load data from multiple sources for agent orchestrator"""
+    data_sources = {}
+    
+    # Load ABS-EE data (current implementation)
+    try:
+        db_handler = DynamoDBHandler()
+        abs_ee_data = db_handler.scan_all_metrics()
+        
+        def convert_decimals(obj):
+            if isinstance(obj, Decimal):
+                return float(obj)
+            elif isinstance(obj, dict):
+                return {k: convert_decimals(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_decimals(item) for item in obj]
+            return obj
+        
+        converted_data = [convert_decimals(item) for item in abs_ee_data]
+        df = convert_to_dataframe(converted_data)
+        
+        data_sources['abs-ee'] = {
+            'data': converted_data,
+            'df': df
+        }
+    except Exception as e:
+        st.warning(f"Could not load ABS-EE data: {e}")
+    
+    # TODO: Load 424H data when available
+    # data_sources['424h'] = {'data': [...], 'df': pd.DataFrame(...)}
+    
+    # TODO: Load 10-D data when available
+    # data_sources['10-d'] = {'data': [...], 'df': pd.DataFrame(...)}
+    
+    return data_sources
 
 
 def convert_to_dataframe(data):
@@ -442,6 +488,10 @@ def main():
                     with st.expander("📚 View Sources"):
                         for i, source in enumerate(message["sources"], 1):
                             st.caption(f"{i}. {source}")
+                
+                # Display visualization count for assistant messages
+                if message["role"] == "assistant" and message.get("visualizations", 0) > 0:
+                    st.caption(f"📊 {message['visualizations']} visualization(s) generated")
         
         # Chat input
         if question := st.chat_input("Ask about auto loan metrics, SEC filings, or financial analysis..."):
@@ -528,11 +578,49 @@ Provide a detailed, professional answer:'''
                                 for i, source in enumerate(sources, 1):
                                     st.caption(f"{i}. {source}")
                         
+                        # Generate visualizations based on query using LangGraph orchestrator
+                        st.markdown("---")
+                        st.markdown("### 📊 Related Visualizations")
+                        
+                        # Load multi-source data for orchestrator
+                        data_sources = load_multi_source_data()
+                        
+                        if data_sources:
+                            # Prepare Bedrock KB IDs
+                            bedrock_kb_ids = {
+                                'abs-ee': KNOWLEDGE_BASE_ID,
+                                '424h': KNOWLEDGE_BASE_ID_424H,
+                                '10-d': KNOWLEDGE_BASE_ID_10D
+                            }
+                            
+                            # Initialize Bedrock client
+                            bedrock_agent_runtime = boto3.client(
+                                'bedrock-agent-runtime',
+                                region_name=BEDROCK_REGION
+                            )
+                            
+                            orchestrator = LangGraphOrchestrator(
+                                data_sources, 
+                                bedrock_kb_ids=bedrock_kb_ids,
+                                bedrock_client=bedrock_agent_runtime
+                            )
+                            visualizations, explanation = orchestrator.generate_visualizations(question)
+                            
+                            if visualizations:
+                                st.caption(explanation)
+                                for fig in visualizations:
+                                    st.plotly_chart(fig, use_container_width=True, key=f"viz_{uuid.uuid4()}")
+                            else:
+                                st.info(f"💡 {explanation}")
+                        else:
+                            st.warning("No data sources available for visualization.")
+                        
                         # Save to conversation history
                         st.session_state.kb_messages.append({
                             "role": "assistant",
                             "content": answer,
-                            "sources": sources
+                            "sources": sources,
+                            "visualizations": len(visualizations)
                         })
                         
                     except Exception as e:
@@ -543,7 +631,8 @@ Provide a detailed, professional answer:'''
                         st.session_state.kb_messages.append({
                             "role": "assistant",
                             "content": error_msg,
-                            "sources": []
+                            "sources": [],
+                            "visualizations": 0
                         })
         
         # Sidebar controls in columns
@@ -569,23 +658,27 @@ Provide a detailed, professional answer:'''
             if st.button("💡 Examples", use_container_width=True):
                 st.markdown("""
                 **Try asking:**
-                - What are delinquency rates?
+                - Show me the portfolio balance by company
                 - Compare FICO scores between companies
-                - Explain loss severity
-                - What is CPR in auto loans?
-                - Analyze geographic distribution
+                - What are the delinquency rates?
+                - Show vehicle mix for GM Financial
+                - Display geographic distribution
+                - Compare interest rates across companies
                 """)
         
         # Show sample data context
         if not st.session_state.kb_messages:
             st.markdown("---")
             st.markdown("### 💬 Sample Questions to Get Started")
+            st.info("💡 The AI Assistant now generates relevant visualizations automatically based on your questions!")
+            
             sample_questions = [
-                "What is the average FICO score across all companies?",
-                "Explain what delinquency rates mean in auto loans",
-                "How do GM Financial and Ford Credit compare?",
-                "What factors affect prepayment speed?",
-                "What are the key metrics for auto loan portfolio analysis?"
+                "Show me the total pool balance by company",
+                "Compare FICO scores between GM Financial and Ford Credit",
+                "What are the delinquency rates and show me a chart?",
+                "Display the geographic distribution of loans",
+                "Show vehicle mix (new vs used) for all companies",
+                "Compare interest rates across companies with visualization"
             ]
             
             for sq in sample_questions:

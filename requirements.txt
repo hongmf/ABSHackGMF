@@ -22,3 +22,12 @@ streamlit==1.31.0
 plotly==5.18.0
 matplotlib==3.8.2
 seaborn==0.13.0
+
+# LangChain and LangGraph for orchestration
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-core>=0.3.0
+
+# Diagram generation
+diagrams>=0.23.0
+graphviz>=0.20.0
